@@ -148,7 +148,8 @@ public final class BrowserActivity extends Activity {
 
     private void startDownload(String url, String mime, String name) {
         toast("Downloading…");
-        new Thread(() -> new DownloadJob(vault).run(url, mime, name, new DownloadJob.Listener() {
+        // Remux HLS .ts -> .mp4 by default; DownloadJob ignores the flag for other kinds.
+        new Thread(() -> new DownloadJob(vault, getCacheDir()).run(url, mime, name, true, new DownloadJob.Listener() {
             @Override public void onProgress(String message) { /* hook for a progress UI */ }
             @Override public void onComplete(String vaultName) {
                 runOnUiThread(() -> toast("Saved to vault: " + vaultName));

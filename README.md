@@ -3,7 +3,7 @@
 [![CI](https://github.com/talktofess/wallet/actions/workflows/ci.yml/badge.svg)](https://github.com/talktofess/wallet/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-17-007396.svg)](https://openjdk.org/)
-![Tests](https://img.shields.io/badge/core%20tests-18%20passing-brightgreen.svg)
+![Tests](https://img.shields.io/badge/core%20tests-28%20passing-brightgreen.svg)
 
 A native Android app, in Java: an **on-device encrypted vault** with an **in-app
 browser that downloads media as you browse** and stores it sealed. It's the
@@ -18,16 +18,23 @@ unit-tested on a plain JVM (and in CI) with no device or emulator. The Android
 ```
 core/   (pure JDK — unit-tested, no Android)
   crypto/VaultCrypto      AES-256-GCM sealing + PBKDF2 key derivation
+  crypto/SecretStream     chunked, authenticated streaming encryption (large files)
   net/HttpClient          the network seam (+ JdkHttpClient, + a fake for tests)
+  net/RetryHttpClient     retry + exponential backoff over transient 5xx / IO errors
   download/MediaSniffer   classify a request as HLS / DASH / progressive / none
   download/M3u8Parser     parse HLS master & media playlists (segments, keys, byteranges)
+  download/DashParser     parse MPEG-DASH MPDs (SegmentTemplate/Timeline -> segment URLs)
   download/FileDownloader progressive download with Range/If-Range resume
   download/HlsDownloader  fetch + AES-128-decrypt + concatenate HLS segments
   download/ContentDisposition  pick a safe filename (RFC 5987 filename*)
+  media/MpegTs            MPEG-TS packet demuxer (PIDs / PES / payloads)
+  vault/VaultIndex        encrypted metadata catalogue (name, MIME, size, source)
+  util/UniqueNames        collision-free filenames
 app/    (Android — Java)
   BrowserActivity   WebView + shouldInterceptRequest + DownloadListener -> MediaDetector
-  DownloadJob       runs the core pipeline on a background thread
-  VaultStore        seals downloads into the app's private storage
+  DownloadJob       runs the core pipeline (HLS / DASH / progressive) off-thread
+  TsRemuxer         lossless .ts -> .mp4 via MediaExtractor + MediaMuxer (no re-encode)
+  VaultStore        SecretStream-encrypts files + keeps the encrypted VaultIndex
   VaultActivity     unlock / list screen
 ```
 
@@ -63,19 +70,25 @@ a download even when the page never exposed one.
                                                    │
  tap ──────────────────────────────────────────────┘
    │
-   ├─ HLS:  GET .m3u8 ─▶ parse ─▶ (master? pick best) ─▶ GET segments ─▶ [decrypt] ─▶ concat
+   ├─ HLS:  GET .m3u8 ─▶ parse ─▶ (master? pick best) ─▶ GET segments ─▶ [decrypt] ─▶ concat ─▶ remux .ts→.mp4
+   ├─ DASH: GET .mpd  ─▶ parse ─▶ pick best representation ─▶ GET init+segments ─▶ concat
    └─ file: GET with Range/If-Range ─▶ (206 append | 200 restart)
+        (all HTTP via RetryHttpClient: backoff over transient 5xx / IO errors)
                                                    │
-                                          VaultCrypto.seal ─▶ private storage
+                                   SecretStream.encrypt ─▶ private storage + encrypted VaultIndex
 ```
 
 ## Security model
 
 - **AES-256-GCM** per item, fresh 96-bit nonce each seal; the GCM tag means a
   tampered or wrong-key blob fails to open (both are tested).
+- Large files use **`SecretStream`** — chunked AEAD with the chunk counter in the
+  nonce and the final-chunk flag authenticated, so **reordering and truncation are
+  detected**, and a multi-GB video never has to be buffered whole.
+- The **catalogue itself is encrypted** (`VaultIndex`): the list of what you saved
+  is private, not just the file bytes.
 - Key is **PBKDF2-HMAC-SHA256**, 210k iterations, over a persisted random salt.
   The passphrase and derived key are never written to disk.
-- Files live in the app's private `filesDir` and are sealed before they're written.
 
 ## Build & test
 
@@ -83,7 +96,7 @@ a download even when the page never exposed one.
 ```bash
 mkdir -p out && find core/src -name '*.java' > sources.txt
 javac -d out @sources.txt
-java -cp out com.wallet.core.CoreCheck     # 18/18 tests pass
+java -cp out com.wallet.core.CoreCheck     # 28/28 tests pass
 ```
 
 **The app:** open the project in Android Studio (it provides Gradle + the Android
@@ -94,14 +107,15 @@ installed. The app module is built in the IDE; CI verifies the pure core.
 
 This downloads **media you have the right to download** — your own content, public
 or Creative-Commons media, or sites whose terms allow it. It handles ordinary,
-unprotected HTTP/HLS only. It **does not** implement DRM circumvention (Widevine /
-PlayReady / CENC) and won't decrypt protected streams. Respect copyright and each
-site's terms of service.
+unprotected HTTP / HLS / DASH only. It **does not** implement DRM circumvention
+(Widevine / PlayReady / CENC) and won't decrypt protected streams. Respect
+copyright and each site's terms of service.
 
 ## Status
 
-- `core`: complete and tested (**18/18**), verified locally and in CI.
-- `app`: full WebView browser + interception + vault wiring; built in Android Studio.
-- Follow-ups: MPEG-DASH support, remux concatenated `.ts` to clean `.mp4`
-  (Media3/FFmpeg), streaming (not buffered) encryption for very large files,
-  biometric unlock, and a progress UI.
+- `core`: tested (**28/28**), verified locally and in CI — crypto, streaming
+  encryption, HLS + DASH parsing, range/resume, retry, TS demux, vault index.
+- `app`: WebView browser + interception, HLS/DASH/progressive download,
+  `.ts → .mp4` remux, and the encrypted vault; built in Android Studio.
+- Follow-ups: DASH `SegmentList`/`SegmentBase` manifests, biometric unlock, a
+  download queue + progress UI, and resumable HLS/DASH across app restarts.

@@ -5,25 +5,36 @@ import static com.wallet.core.MicroTest.eq;
 import static com.wallet.core.MicroTest.summary;
 import static com.wallet.core.MicroTest.test;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
+import com.wallet.core.crypto.SecretStream;
 import com.wallet.core.crypto.VaultCrypto;
 import com.wallet.core.download.ContentDisposition;
+import com.wallet.core.download.Dash;
+import com.wallet.core.download.DashParser;
 import com.wallet.core.download.DownloadPlanner;
 import com.wallet.core.download.FileDownloader;
 import com.wallet.core.download.HlsDownloader;
 import com.wallet.core.download.M3u8;
 import com.wallet.core.download.M3u8Parser;
 import com.wallet.core.download.MediaSniffer;
+import com.wallet.core.media.MpegTs;
+import com.wallet.core.net.HttpClient;
+import com.wallet.core.net.RetryHttpClient;
+import com.wallet.core.util.UniqueNames;
+import com.wallet.core.vault.VaultIndex;
 
 /** The wallet core test suite — runs with a plain JDK, no JUnit/Gradle. */
 public final class CoreCheck {
@@ -188,7 +199,158 @@ public final class CoreCheck {
             check(Arrays.equals(out.toByteArray(), concat(p0, p1)), "decrypted concat mismatch");
         });
 
+        // -------- SecretStream (chunked streaming AEAD) --------
+        test("secret stream round-trips across many chunks", () -> {
+            SecretKey k = VaultCrypto.deriveKey("pw".toCharArray(), VaultCrypto.newSalt(), 10_000);
+            byte[] plain = new byte[100];
+            for (int i = 0; i < plain.length; i++) plain[i] = (byte) i;
+            ByteArrayOutputStream enc = new ByteArrayOutputStream();
+            SecretStream.encrypt(k, new ByteArrayInputStream(plain), enc, 16);
+            ByteArrayOutputStream dec = new ByteArrayOutputStream();
+            SecretStream.decrypt(k, new ByteArrayInputStream(enc.toByteArray()), dec);
+            check(Arrays.equals(dec.toByteArray(), plain), "round-trip mismatch");
+        });
+        test("secret stream rejects a tampered chunk", () -> {
+            SecretKey k = VaultCrypto.deriveKey("pw".toCharArray(), VaultCrypto.newSalt(), 10_000);
+            ByteArrayOutputStream enc = new ByteArrayOutputStream();
+            SecretStream.encrypt(k, new ByteArrayInputStream("some secret bytes here".getBytes()), enc, 8);
+            byte[] blob = enc.toByteArray();
+            blob[blob.length - 1] ^= 0x01;
+            boolean threw = false;
+            try { SecretStream.decrypt(k, new ByteArrayInputStream(blob), new ByteArrayOutputStream()); }
+            catch (Exception e) { threw = true; }
+            check(threw, "tampered stream must fail");
+        });
+        test("secret stream detects truncation", () -> {
+            SecretKey k = VaultCrypto.deriveKey("pw".toCharArray(), VaultCrypto.newSalt(), 10_000);
+            ByteArrayOutputStream enc = new ByteArrayOutputStream();
+            SecretStream.encrypt(k, new ByteArrayInputStream(new byte[64]), enc, 16);
+            byte[] cut = Arrays.copyOf(enc.toByteArray(), enc.size() - 8);   // lose the final chunk
+            boolean threw = false;
+            try { SecretStream.decrypt(k, new ByteArrayInputStream(cut), new ByteArrayOutputStream()); }
+            catch (Exception e) { threw = true; }
+            check(threw, "truncated stream must fail");
+        });
+
+        // -------- RetryHttpClient --------
+        test("retry client recovers after transient 5xx", () -> {
+            final int[] calls = {0};
+            FakeHttpClient fake = new FakeHttpClient().handler((url, h) -> {
+                calls[0]++;
+                FakeHttpClient.Stub s = new FakeHttpClient.Stub();
+                if (calls[0] < 3) { s.status = 503; } else { s.status = 200; s.body = "ok".getBytes(); }
+                return s;
+            });
+            RetryHttpClient retry = new RetryHttpClient(fake, 3, 1, ms -> { /* no real wait */ });
+            try (HttpClient.Response r = retry.get("https://x/f", Collections.emptyMap())) {
+                eq(r.status(), 200);
+            }
+            eq(calls[0], 3);
+        });
+
+        // -------- UniqueNames --------
+        test("unique names disambiguate collisions", () -> {
+            Set<String> taken = new HashSet<>(Arrays.asList("clip.mp4"));
+            eq(UniqueNames.make("clip.mp4", taken), "clip (1).mp4");
+            taken.add("clip (1).mp4");
+            eq(UniqueNames.make("clip.mp4", taken), "clip (2).mp4");
+            eq(UniqueNames.make("fresh.mp4", taken), "fresh.mp4");
+        });
+
+        // -------- VaultIndex --------
+        test("vault index serialises, parses, and removes", () -> {
+            VaultIndex idx = new VaultIndex();
+            idx.add(new VaultIndex.Item("id1", "my video.mp4", "video/mp4", 12345L, "https://x/v.m3u8", 1000L));
+            idx.add(new VaultIndex.Item("id2", "song.mp3", "audio/mpeg", 99L, "", 2000L));
+            VaultIndex back = VaultIndex.parse(idx.serialize());
+            eq(back.size(), 2);
+            eq(back.byId("id1").name, "my video.mp4");
+            eq(back.byId("id1").size, 12345L);
+            eq(back.byId("id2").mime, "audio/mpeg");
+            check(back.remove("id1"), "remove should succeed");
+            eq(back.size(), 1);
+        });
+        test("vault index can be sealed and reopened", () -> {
+            SecretKey k = VaultCrypto.deriveKey("pw".toCharArray(), VaultCrypto.newSalt(), 10_000);
+            VaultIndex idx = new VaultIndex();
+            idx.add(new VaultIndex.Item("a", "f.mp4", "video/mp4", 1, "u", 1));
+            VaultIndex back = VaultIndex.parse(VaultCrypto.open(k, VaultCrypto.seal(k, idx.serialize())));
+            eq(back.size(), 1);
+            eq(back.byId("a").name, "f.mp4");
+        });
+
+        // -------- MpegTs --------
+        test("mpeg-ts parses packets, PUSI flags, and PIDs", () -> {
+            byte[] stream = concat(tsPacket(0x100, true, (byte) 0xAA), tsPacket(0x101, false, (byte) 0xBB));
+            List<MpegTs.Packet> packets = MpegTs.parse(stream);
+            eq(packets.size(), 2);
+            eq(packets.get(0).pid, 0x100);
+            check(packets.get(0).payloadStart, "first packet has payload-unit-start");
+            check(!packets.get(1).payloadStart, "second packet does not");
+            eq(packets.get(0).payload[0] & 0xFF, 0xAA);
+            check(MpegTs.pids(stream).contains(0x101), "PIDs should include 0x101");
+        });
+
+        // -------- DashParser --------
+        test("dash: pick best variant and expand a SegmentTimeline", () -> {
+            String mpd = """
+                <?xml version="1.0"?>
+                <MPD mediaPresentationDuration="PT12S">
+                  <Period>
+                    <AdaptationSet mimeType="video/mp4">
+                      <Representation id="v0" bandwidth="800000" width="640" height="360">
+                        <SegmentTemplate initialization="init-$RepresentationID$.m4s" media="seg-$RepresentationID$-$Number$.m4s" startNumber="1" timescale="1000">
+                          <SegmentTimeline><S t="0" d="6000" r="1"/></SegmentTimeline>
+                        </SegmentTemplate>
+                      </Representation>
+                      <Representation id="v1" bandwidth="2500000" width="1280" height="720">
+                        <SegmentTemplate initialization="init-$RepresentationID$.m4s" media="seg-$RepresentationID$-$Number$.m4s" startNumber="1" timescale="1000">
+                          <SegmentTimeline><S t="0" d="6000" r="1"/></SegmentTimeline>
+                        </SegmentTemplate>
+                      </Representation>
+                    </AdaptationSet>
+                  </Period>
+                </MPD>
+                """;
+            Dash d = DashParser.parse(mpd, "https://cdn.example.com/dash/manifest.mpd");
+            eq(d.video.id, "v1");
+            eq(d.video.height, 720);
+            eq(d.segments.size(), 3);   // init + 2 media
+            eq(d.segments.get(0), "https://cdn.example.com/dash/init-v1.m4s");
+            eq(d.segments.get(2), "https://cdn.example.com/dash/seg-v1-2.m4s");
+        });
+        test("dash: expand an @duration template with %0Nd numbering", () -> {
+            String mpd = """
+                <?xml version="1.0"?>
+                <MPD mediaPresentationDuration="PT12S">
+                  <Period>
+                    <AdaptationSet mimeType="video/mp4">
+                      <Representation id="r0" bandwidth="1000000" width="640" height="360">
+                        <SegmentTemplate initialization="init.mp4" media="$Number%03d$.m4s" startNumber="1" timescale="1" duration="4"/>
+                      </Representation>
+                    </AdaptationSet>
+                  </Period>
+                </MPD>
+                """;
+            Dash d = DashParser.parse(mpd, "https://cdn.example.com/d/manifest.mpd");
+            eq(d.segments.size(), 4);   // init + 3 media (12s / 4s)
+            check(d.segments.get(1).endsWith("/001.m4s"), "first media should be 001");
+            check(d.segments.get(3).endsWith("/003.m4s"), "third media should be 003");
+        });
+
         System.exit(summary());
+    }
+
+    static byte[] tsPacket(int pid, boolean payloadStart, byte fill) {
+        byte[] p = new byte[MpegTs.PACKET_SIZE];
+        p[0] = (byte) MpegTs.SYNC_BYTE;
+        int b1 = (pid >> 8) & 0x1F;
+        if (payloadStart) b1 |= 0x40;
+        p[1] = (byte) b1;
+        p[2] = (byte) (pid & 0xFF);
+        p[3] = (byte) 0x10;                 // adaptation_field_control = 01 (payload only)
+        for (int i = 4; i < p.length; i++) p[i] = fill;
+        return p;
     }
 
     static byte[] aesEncrypt(byte[] key, byte[] iv, byte[] data) throws Exception {
