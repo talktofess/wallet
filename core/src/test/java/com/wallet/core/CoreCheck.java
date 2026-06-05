@@ -25,6 +25,9 @@ import com.wallet.core.download.ContentDisposition;
 import com.wallet.core.download.Dash;
 import com.wallet.core.download.DashParser;
 import com.wallet.core.download.DownloadPlanner;
+import com.wallet.core.download.DownloadQueue;
+import com.wallet.core.download.DownloadState;
+import com.wallet.core.download.DownloadTask;
 import com.wallet.core.download.FileDownloader;
 import com.wallet.core.download.HlsDownloader;
 import com.wallet.core.download.M3u8;
@@ -336,6 +339,86 @@ public final class CoreCheck {
             eq(d.segments.size(), 4);   // init + 3 media (12s / 4s)
             check(d.segments.get(1).endsWith("/001.m4s"), "first media should be 001");
             check(d.segments.get(3).endsWith("/003.m4s"), "third media should be 003");
+        });
+
+        // -------- DownloadQueue --------
+        test("queue add starts QUEUED and is next to run", () -> {
+            DownloadQueue q = new DownloadQueue();
+            DownloadTask t = q.add("https://x/a.mp4", "a.mp4", "video/mp4", 1000);
+            eq(t.state(), DownloadState.QUEUED);
+            eq(q.nextQueued().id, t.id);
+            check(q.hasWork(), "should have work");
+        });
+        test("queue runs a task to completion", () -> {
+            DownloadQueue q = new DownloadQueue();
+            String id = q.add("https://x/a.mp4", "a.mp4", "video/mp4", 1).id;
+            q.start(id);
+            eq(q.byId(id).state(), DownloadState.RUNNING);
+            q.progress(id, 50, 100);
+            eq(q.byId(id).percent(), 50);
+            q.complete(id);
+            eq(q.byId(id).state(), DownloadState.COMPLETED);
+            eq(q.byId(id).bytesDone(), 100L);
+            check(!q.hasWork(), "no work after completion");
+        });
+        test("queue pause and resume", () -> {
+            DownloadQueue q = new DownloadQueue();
+            String id = q.add("u", "n", "", 1).id;
+            q.pause(id);
+            eq(q.byId(id).state(), DownloadState.PAUSED);
+            check(!q.hasWork(), "paused task is not runnable");
+            q.resume(id);
+            eq(q.byId(id).state(), DownloadState.QUEUED);
+        });
+        test("queue fail then retry resets progress", () -> {
+            DownloadQueue q = new DownloadQueue();
+            String id = q.add("u", "n", "", 1).id;
+            q.start(id);
+            q.progress(id, 30, 100);
+            q.fail(id, "boom");
+            eq(q.byId(id).state(), DownloadState.FAILED);
+            eq(q.byId(id).message(), "boom");
+            q.retry(id);
+            eq(q.byId(id).state(), DownloadState.QUEUED);
+            eq(q.byId(id).bytesDone(), 0L);
+        });
+        test("queue rejects an illegal transition", () -> {
+            DownloadQueue q = new DownloadQueue();
+            String id = q.add("u", "n", "", 1).id;
+            boolean threw = false;
+            try { q.complete(id); } catch (IllegalStateException e) { threw = true; }   // QUEUED can't complete
+            check(threw, "completing a queued task must throw");
+        });
+        test("nextQueued skips running and completed tasks", () -> {
+            DownloadQueue q = new DownloadQueue();
+            String a = q.add("u1", "a", "", 1).id;
+            String b = q.add("u2", "b", "", 2).id;
+            q.start(a);
+            q.complete(a);
+            eq(q.nextQueued().id, b);
+        });
+        test("queue serialises and restores (running -> queued)", () -> {
+            DownloadQueue q = new DownloadQueue();
+            String a = q.add("https://x/a.mp4", "a.mp4", "video/mp4", 10).id;
+            String b = q.add("https://x/b.mp4", "b.mp4", "video/mp4", 20).id;
+            q.start(a);
+            q.progress(a, 25, 100);
+            q.start(b);
+            q.complete(b);
+            DownloadQueue back = DownloadQueue.parse(q.serialize());
+            eq(back.tasks().size(), 2);
+            eq(back.byId(a).state(), DownloadState.QUEUED);    // interrupted RUNNING resumes as QUEUED
+            eq(back.byId(a).bytesDone(), 25L);
+            eq(back.byId(b).state(), DownloadState.COMPLETED);
+        });
+        test("queue notifies listeners on every change", () -> {
+            DownloadQueue q = new DownloadQueue();
+            final int[] hits = {0};
+            q.addListener(() -> hits[0]++);
+            String id = q.add("u", "n", "", 1).id;   // change 1
+            q.start(id);                              // change 2
+            q.complete(id);                           // change 3
+            check(hits[0] >= 3, "listener should fire on each change");
         });
 
         System.exit(summary());

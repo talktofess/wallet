@@ -41,7 +41,8 @@ import com.wallet.core.net.RetryHttpClient;
 public final class DownloadJob {
 
     public interface Listener {
-        void onProgress(String message);
+        /** {@code total} is -1 when unknown; units are bytes (progressive) or segments (HLS/DASH). */
+        void onProgress(long done, long total, String label);
         void onComplete(String vaultName);
         void onError(Exception error);
     }
@@ -69,13 +70,14 @@ public final class DownloadJob {
                 M3u8 playlist = M3u8Parser.parse(fetchText(url), finalUrlOf(url));
                 if (playlist.isMaster()) {
                     M3u8.Variant best = DownloadPlanner.bestVariant(playlist);
-                    l.onProgress("variant " + (best.resolution != null ? best.resolution : best.bandwidth + " bps"));
+                    l.onProgress(0, -1, "variant " + (best.resolution != null ? best.resolution : best.bandwidth + " bps"));
                     playlist = M3u8Parser.parse(fetchText(best.uri), best.uri);
                 }
                 if (playlist.segments.isEmpty()) throw new IOException("playlist had no segments");
                 temp = newTemp(".ts");
                 try (OutputStream out = new FileOutputStream(temp)) {
-                    HlsDownloader.download(http, playlist, out, (done, n) -> l.onProgress("segment " + done + "/" + n));
+                    HlsDownloader.download(http, playlist, out,
+                            (done, n) -> l.onProgress(done, n, "segment " + done + "/" + n));
                 }
                 if (remux) {
                     remuxed = newTemp(".mp4");
@@ -95,7 +97,8 @@ public final class DownloadJob {
                 try (OutputStream out = new FileOutputStream(temp)) {
                     for (String segment : dash.segments) {
                         copyUrl(segment, out);
-                        l.onProgress("segment " + (++i) + "/" + dash.segments.size());
+                        i++;
+                        l.onProgress(i, dash.segments.size(), "segment " + i + "/" + dash.segments.size());
                     }
                 }
                 toStore = temp;
@@ -105,7 +108,7 @@ public final class DownloadJob {
                 temp = newTemp(".bin");
                 try (OutputStream out = new FileOutputStream(temp)) {
                     FileDownloader.fetch(http, url, 0, null, out,
-                            (done, t) -> l.onProgress(done + (t > 0 ? "/" + t : "") + " bytes"));
+                            (done, t) -> l.onProgress(done, t, done + (t > 0 ? "/" + t : "") + " bytes"));
                 }
                 toStore = temp;
                 name = ContentDisposition.resolve(null, suggestedName != null ? suggestedName : url);

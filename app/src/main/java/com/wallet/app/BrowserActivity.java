@@ -2,7 +2,11 @@ package com.wallet.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
 import android.webkit.URLUtil;
@@ -17,6 +21,8 @@ import android.widget.LinearLayout;
 import android.widget.Toast;
 
 import java.util.List;
+
+import com.wallet.core.download.ContentDisposition;
 
 /**
  * The in-app browser. As a page loads, {@link WebViewClient#shouldInterceptRequest}
@@ -147,17 +153,35 @@ public final class BrowserActivity extends Activity {
     }
 
     private void startDownload(String url, String mime, String name) {
-        toast("Downloading…");
-        // Remux HLS .ts -> .mp4 by default; DownloadJob ignores the flag for other kinds.
-        new Thread(() -> new DownloadJob(vault, getCacheDir()).run(url, mime, name, true, new DownloadJob.Listener() {
-            @Override public void onProgress(String message) { /* hook for a progress UI */ }
-            @Override public void onComplete(String vaultName) {
-                runOnUiThread(() -> toast("Saved to vault: " + vaultName));
-            }
-            @Override public void onError(Exception error) {
-                runOnUiThread(() -> toast("Download failed: " + error.getMessage()));
-            }
-        })).start();
+        // Enqueue and let the foreground DownloadService work it; watch it on the
+        // Downloads screen (menu). HLS is remuxed to .mp4 by the job.
+        String display = (name != null && !name.isEmpty()) ? name : ContentDisposition.fromUrl(url);
+        ((App) getApplication()).queue().add(url, display, mime, System.currentTimeMillis());
+        Intent i = new Intent(this, DownloadService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
+        else startService(i);
+        toast("Queued: " + display);
+    }
+
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        menu.add(0, 1, 0, "Downloads");
+        menu.add(0, 2, 1, "Lock vault");
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        if (item.getItemId() == 1) {
+            startActivity(new Intent(this, DownloadsActivity.class));
+            return true;
+        }
+        if (item.getItemId() == 2) {
+            ((App) getApplication()).vault().lock();
+            finish();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
     }
 
     @Override

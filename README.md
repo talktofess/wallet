@@ -3,7 +3,7 @@
 [![CI](https://github.com/talktofess/wallet/actions/workflows/ci.yml/badge.svg)](https://github.com/talktofess/wallet/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-17-007396.svg)](https://openjdk.org/)
-![Tests](https://img.shields.io/badge/core%20tests-28%20passing-brightgreen.svg)
+![Tests](https://img.shields.io/badge/core%20tests-36%20passing-brightgreen.svg)
 
 A native Android app, in Java: an **on-device encrypted vault** with an **in-app
 browser that downloads media as you browse** and stores it sealed. It's the
@@ -27,12 +27,15 @@ core/   (pure JDK — unit-tested, no Android)
   download/FileDownloader progressive download with Range/If-Range resume
   download/HlsDownloader  fetch + AES-128-decrypt + concatenate HLS segments
   download/ContentDisposition  pick a safe filename (RFC 5987 filename*)
+  download/DownloadQueue  ordered queue state machine (+ task model, persistence)
   media/MpegTs            MPEG-TS packet demuxer (PIDs / PES / payloads)
   vault/VaultIndex        encrypted metadata catalogue (name, MIME, size, source)
   util/UniqueNames        collision-free filenames
 app/    (Android — Java)
   BrowserActivity   WebView + shouldInterceptRequest + DownloadListener -> MediaDetector
   DownloadJob       runs the core pipeline (HLS / DASH / progressive) off-thread
+  DownloadService   foreground worker draining the queue + progress notification
+  DownloadsActivity queue UI: per-item progress, pause/resume/cancel/retry
   TsRemuxer         lossless .ts -> .mp4 via MediaExtractor + MediaMuxer (no re-encode)
   VaultStore        SecretStream-encrypts files + keeps the encrypted VaultIndex
   VaultActivity     unlock / list screen
@@ -96,7 +99,7 @@ a download even when the page never exposed one.
 ```bash
 mkdir -p out && find core/src -name '*.java' > sources.txt
 javac -d out @sources.txt
-java -cp out com.wallet.core.CoreCheck     # 28/28 tests pass
+java -cp out com.wallet.core.CoreCheck     # 36/36 tests pass
 ```
 
 **The app:** open the project in Android Studio (it provides Gradle + the Android
@@ -113,9 +116,13 @@ copyright and each site's terms of service.
 
 ## Status
 
-- `core`: tested (**28/28**), verified locally and in CI — crypto, streaming
-  encryption, HLS + DASH parsing, range/resume, retry, TS demux, vault index.
-- `app`: WebView browser + interception, HLS/DASH/progressive download,
-  `.ts → .mp4` remux, and the encrypted vault; built in Android Studio.
-- Follow-ups: DASH `SegmentList`/`SegmentBase` manifests, biometric unlock, a
-  download queue + progress UI, and resumable HLS/DASH across app restarts.
+- `core`: tested (**36/36**), verified locally and in CI — crypto, streaming
+  encryption, HLS + DASH parsing, range/resume, retry, TS demux, vault index, and
+  the **download-queue state machine** (transitions + persistence).
+- `app`: WebView browser + interception, a **download queue** drained by a
+  foreground service with a **progress notification**, a **downloads screen**
+  (pause / resume / cancel / retry), HLS/DASH/progressive download, `.ts → .mp4`
+  remux, and the encrypted vault; built in Android Studio.
+- Follow-ups: DASH `SegmentList`/`SegmentBase` manifests, biometric unlock,
+  cancellable mid-stream IO (today pause/cancel of a running task lands at the
+  next task boundary), and persisting the queue across process death.
