@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  core:
+    name: core (javac + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The core has no Android/Gradle dependency, so CI verifies it with a plain
+      # javac + java run — fast, hermetic, and exactly what runs locally.
+      - name: Compile core + tests
+        run: |
+          mkdir -p out
+          find core/src -name '*.java' > sources.txt
+          javac -d out @sources.txt
+
+      - name: Run core test suite
+        run: java -cp out com.wallet.core.CoreCheck

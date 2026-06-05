@@ -1,0 +1,11 @@
+// The pure-JDK core: crypto, HLS parsing, and the download engine. No Android
+// dependency, so it builds and tests on any JVM (and is verified in CI with a
+// plain javac/java run — see .github/workflows/ci.yml).
+plugins {
+    id 'java-library'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}

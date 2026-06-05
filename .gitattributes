@@ -1,0 +1,9 @@
+# Store text with LF; check out native on Windows.
+* text=auto eol=lf
+
+# Binary assets.
+*.png binary
+*.jpg binary
+*.jar binary
+*.ts  binary
+*.mp4 binary

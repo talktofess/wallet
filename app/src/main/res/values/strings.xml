@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Wallet</string>
+    <string name="passphrase">Passphrase</string>
+    <string name="unlock">Unlock</string>
+    <string name="create_vault">Create vault</string>
+    <string name="open_browser">Open browser</string>
+    <string name="saved_items">Saved items</string>
+    <string name="address_hint">https://…</string>
+    <string name="media_found">Media found on this page</string>
+    <string name="download_to_vault">Download to vault?</string>
+    <string name="download">Download</string>
+</resources>

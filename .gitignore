@@ -1,0 +1,25 @@
+# Build output
+.gradle/
+build/
+out/
+*.class
+sources.txt
+
+# Android / IDE
+local.properties
+.idea/
+*.iml
+captures/
+*.apk
+*.aab
+
+# Signing — never commit keys
+*.keystore
+*.jks
+
+# Downloaded media / test fixtures
+roms/
+*.ts
+
+.DS_Store
+COMMIT_MSG.txt
