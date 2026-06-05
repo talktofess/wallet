@@ -106,9 +106,15 @@ javac -d out @sources.txt
 java -cp out com.wallet.core.CoreCheck     # 44/44 tests pass
 ```
 
-**The app:** open the project in Android Studio (it provides Gradle + the Android
-SDK) and run the `app` configuration, or `gradle :app:assembleDebug` with the SDK
+**The app:** open the `wallet` folder in Android Studio (Koala / 2024.1+), let it
+sync, install **Android SDK Platform 34** via the SDK Manager, pick a device or
+emulator on **Android 8.0+** (`minSdk 26`), and Run. The Gradle wrapper (8.7) is
+included, so `./gradlew :app:assembleDebug` also works from the CLI with the SDK
 installed. The app module is built in the IDE; CI verifies the pure core.
+
+> `minSdk` is 26 (Android 8.0) because the crypto and storage use APIs introduced
+> there: `java.util.Base64`, `java.nio.file.Files`, and the
+> `PBKDF2WithHmacSHA256` `SecretKeyFactory`.
 
 ## Scope & boundaries
 

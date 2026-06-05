@@ -8,7 +8,9 @@ android {
 
     defaultConfig {
         applicationId 'com.wallet.app'
-        minSdk 24
+        // 26 (Android 8.0): java.util.Base64, java.nio.file.Files, and the
+        // PBKDF2WithHmacSHA256 SecretKeyFactory all require API 26.
+        minSdk 26
         targetSdk 34
         versionCode 1
         versionName '1.0'

@@ -1,8 +1,10 @@
 package com.wallet.app;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.Menu;
@@ -106,6 +108,16 @@ public final class BrowserActivity extends Activity {
             }
             return false;
         });
+
+        maybeRequestNotifications();
+    }
+
+    /** Android 13+ gates the download progress notification behind a runtime grant. */
+    private void maybeRequestNotifications() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 100);
+        }
     }
 
     private void go(String url) {
