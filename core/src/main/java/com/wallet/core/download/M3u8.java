@@ -60,14 +60,21 @@ public final class M3u8 {
     public final List<Segment> segments;    // populated for MEDIA
     public final double targetDuration;
     public final long mediaSequence;
+    public final String initSegment;        // EXT-X-MAP URI (fMP4 init), or null
 
     public M3u8(Type type, List<Variant> variants, List<Segment> segments,
                 double targetDuration, long mediaSequence) {
+        this(type, variants, segments, targetDuration, mediaSequence, null);
+    }
+
+    public M3u8(Type type, List<Variant> variants, List<Segment> segments,
+                double targetDuration, long mediaSequence, String initSegment) {
         this.type = type;
         this.variants = variants;
         this.segments = segments;
         this.targetDuration = targetDuration;
         this.mediaSequence = mediaSequence;
+        this.initSegment = initSegment;
     }
 
     public boolean isMaster() { return type == Type.MASTER; }

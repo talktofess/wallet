@@ -38,6 +38,11 @@ public final class FileDownloader {
 
     public static Result fetch(HttpClient http, String url, long from, String validator,
                                OutputStream out, Progress cb) throws IOException {
+        return fetch(http, url, from, validator, out, cb, CancelSignal.NONE);
+    }
+
+    public static Result fetch(HttpClient http, String url, long from, String validator,
+                               OutputStream out, Progress cb, CancelSignal cancel) throws IOException {
         Map<String, String> headers = new HashMap<>();
         if (from > 0) {
             headers.put("Range", "bytes=" + from + "-");
@@ -55,7 +60,7 @@ public final class FileDownloader {
             String newValidator = firstNonNull(r.header("ETag"), r.header("Last-Modified"));
             long base = (partial && !restarted) ? from : 0;
 
-            long received = copy(r.body(), out, base, total, cb);
+            long received = copy(r.body(), out, base, total, cb, cancel);
             return new Result(received, restarted, total, newValidator);
         }
     }
@@ -76,12 +81,13 @@ public final class FileDownloader {
         return partial ? from + cl : cl;
     }
 
-    static long copy(InputStream in, OutputStream out, long base, long total, Progress cb)
+    static long copy(InputStream in, OutputStream out, long base, long total, Progress cb, CancelSignal cancel)
             throws IOException {
         byte[] buf = new byte[64 * 1024];
         long received = 0;
         int n;
         while ((n = in.read(buf)) >= 0) {
+            if (cancel.cancelled()) throw new CancelledException();
             out.write(buf, 0, n);
             received += n;
             if (cb != null) cb.onProgress(base + received, total);

@@ -9,6 +9,8 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 
+import com.wallet.core.download.CancelSignal;
+import com.wallet.core.download.CancelledException;
 import com.wallet.core.download.ContentDisposition;
 import com.wallet.core.download.Dash;
 import com.wallet.core.download.DashParser;
@@ -56,7 +58,8 @@ public final class DownloadJob {
         this.workDir = workDir;
     }
 
-    public void run(String url, String contentType, String suggestedName, boolean remux, Listener l) {
+    public void run(String url, String contentType, String suggestedName, boolean remux,
+                    CancelSignal cancel, Listener l) {
         File temp = null;
         File remuxed = null;
         try {
@@ -77,7 +80,7 @@ public final class DownloadJob {
                 temp = newTemp(".ts");
                 try (OutputStream out = new FileOutputStream(temp)) {
                     HlsDownloader.download(http, playlist, out,
-                            (done, n) -> l.onProgress(done, n, "segment " + done + "/" + n));
+                            (done, n) -> l.onProgress(done, n, "segment " + done + "/" + n), cancel);
                 }
                 if (remux) {
                     remuxed = newTemp(".mp4");
@@ -96,6 +99,7 @@ public final class DownloadJob {
                 int i = 0;
                 try (OutputStream out = new FileOutputStream(temp)) {
                     for (String segment : dash.segments) {
+                        if (cancel.cancelled()) throw new CancelledException();
                         copyUrl(segment, out);
                         i++;
                         l.onProgress(i, dash.segments.size(), "segment " + i + "/" + dash.segments.size());
@@ -108,7 +112,7 @@ public final class DownloadJob {
                 temp = newTemp(".bin");
                 try (OutputStream out = new FileOutputStream(temp)) {
                     FileDownloader.fetch(http, url, 0, null, out,
-                            (done, t) -> l.onProgress(done, t, done + (t > 0 ? "/" + t : "") + " bytes"));
+                            (done, t) -> l.onProgress(done, t, done + (t > 0 ? "/" + t : "") + " bytes"), cancel);
                 }
                 toStore = temp;
                 name = ContentDisposition.resolve(null, suggestedName != null ? suggestedName : url);

@@ -2,6 +2,7 @@ package com.wallet.app;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.ViewGroup;
@@ -14,6 +15,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.List;
+
+import com.wallet.core.download.DownloadQueue;
 
 /**
  * Launcher screen: unlock (or create) the vault with a passphrase, then list the
@@ -53,6 +56,7 @@ public final class VaultActivity extends Activity {
         unlock.setOnClickListener(v -> {
             try {
                 vault.unlock(pass.getText().toString().toCharArray());
+                restoreQueue();
                 showVault();
             } catch (Exception e) {
                 toast("Unlock failed: " + e.getMessage());
@@ -84,6 +88,21 @@ public final class VaultActivity extends Activity {
         root.addView(header);
         root.addView(list);
         setContentView(root);
+    }
+
+    /** Restore the encrypted download queue saved last session, and resume any pending work. */
+    private void restoreQueue() {
+        try {
+            byte[] blob = vault.loadBlobOrNull("queue");
+            if (blob == null) return;
+            DownloadQueue queue = ((App) getApplication()).queue();
+            queue.loadSerialized(blob);
+            if (queue.hasWork()) {
+                Intent i = new Intent(this, DownloadService.class);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
+                else startService(i);
+            }
+        } catch (Exception ignored) { /* no saved queue / cannot decrypt */ }
     }
 
     private LinearLayout column() {

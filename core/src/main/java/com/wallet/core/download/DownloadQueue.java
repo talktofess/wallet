@@ -123,6 +123,21 @@ public final class DownloadQueue {
         return removed;
     }
 
+    /** Attach a status line (e.g. "1.2 MB/s • ETA 8s") without changing state. */
+    public synchronized void note(String id, String message) {
+        DownloadTask t = byId(id);
+        if (t == null || t.state().isTerminal()) return;
+        t.setMessage(message);
+        notifyChanged();
+    }
+
+    /** Replace the queue contents from a serialized blob (used to restore on unlock). */
+    public synchronized void loadSerialized(byte[] data) {
+        tasks.clear();
+        tasks.addAll(parse(data).tasks);
+        notifyChanged();
+    }
+
     // --- persistence ---------------------------------------------------------
 
     public synchronized byte[] serialize() {

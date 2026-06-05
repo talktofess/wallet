@@ -27,6 +27,7 @@ public final class M3u8Parser {
         long pendingLen = -1, pendingOff = -1;
         long nextByteOffset = 0;
         String pendingVariant = null;
+        String initSegment = null;
         M3u8.Key currentKey = null;
 
         for (String raw : text.split("\\r?\\n")) {
@@ -50,6 +51,9 @@ public final class M3u8Parser {
                 currentKey = "NONE".equalsIgnoreCase(method)
                         ? null
                         : new M3u8.Key(method, resolve(baseUrl, a.get("URI")), a.get("IV"));
+            } else if (line.startsWith("#EXT-X-MAP:")) {
+                Map<String, String> a = parseAttributes(line.substring("#EXT-X-MAP:".length()));
+                initSegment = resolve(baseUrl, a.get("URI"));     // fMP4 init segment
             } else if (line.startsWith("#EXT-X-BYTERANGE:")) {
                 String br = line.substring("#EXT-X-BYTERANGE:".length());
                 int at = br.indexOf('@');
@@ -75,7 +79,7 @@ public final class M3u8Parser {
         }
 
         M3u8.Type type = isMaster ? M3u8.Type.MASTER : M3u8.Type.MEDIA;
-        return new M3u8(type, variants, segments, targetDuration, mediaSequence);
+        return new M3u8(type, variants, segments, targetDuration, mediaSequence, initSegment);
     }
 
     /** Resolve a possibly-relative URI against the playlist URL. */

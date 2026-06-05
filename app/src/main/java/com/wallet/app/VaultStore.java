@@ -94,6 +94,20 @@ public final class VaultStore {
         return out.toByteArray();
     }
 
+    /** Seal a small named blob (e.g. the serialized download queue) into the vault. */
+    public void saveBlob(String name, byte[] data) throws Exception {
+        requireUnlocked();
+        writeAll(new File(dir, ".blob-" + name), VaultCrypto.seal(key, data));
+    }
+
+    /** Open a blob saved with {@link #saveBlob}, or null if it doesn't exist. */
+    public byte[] loadBlobOrNull(String name) throws Exception {
+        requireUnlocked();
+        File f = new File(dir, ".blob-" + name);
+        if (!f.exists()) return null;
+        return VaultCrypto.open(key, Files.readAllBytes(f.toPath()));
+    }
+
     public List<VaultIndex.Item> items() {
         return index.items();
     }

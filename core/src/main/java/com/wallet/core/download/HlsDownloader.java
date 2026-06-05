@@ -34,17 +34,28 @@ public final class HlsDownloader {
 
     public static int download(HttpClient http, M3u8 media, OutputStream out, Progress cb)
             throws IOException, GeneralSecurityException {
+        return download(http, media, out, cb, CancelSignal.NONE);
+    }
+
+    public static int download(HttpClient http, M3u8 media, OutputStream out, Progress cb, CancelSignal cancel)
+            throws IOException, GeneralSecurityException {
         final int total = media.segments.size();
         int done = 0;
         Map<String, byte[]> keyCache = new HashMap<>();
 
+        // fMP4 streams carry an EXT-X-MAP init segment that must precede the media.
+        if (media.initSegment != null) {
+            out.write(readAll(http, media.initSegment, -1, -1, cancel));
+        }
+
         for (M3u8.Segment seg : media.segments) {
-            byte[] data = readAll(http, seg.uri, seg.byteOffset, seg.byteLength);
+            if (cancel.cancelled()) throw new CancelledException();
+            byte[] data = readAll(http, seg.uri, seg.byteOffset, seg.byteLength, cancel);
 
             if (seg.key != null && "AES-128".equalsIgnoreCase(seg.key.method)) {
                 byte[] key = keyCache.get(seg.key.uri);
                 if (key == null) {
-                    key = readAll(http, seg.key.uri, -1, -1);
+                    key = readAll(http, seg.key.uri, -1, -1, cancel);
                     keyCache.put(seg.key.uri, key);
                 }
                 byte[] iv = seg.key.iv != null
@@ -60,7 +71,8 @@ public final class HlsDownloader {
         return done;
     }
 
-    static byte[] readAll(HttpClient http, String url, long offset, long length) throws IOException {
+    static byte[] readAll(HttpClient http, String url, long offset, long length, CancelSignal cancel)
+            throws IOException {
         Map<String, String> headers = new HashMap<>();
         if (length >= 0) {
             long start = Math.max(offset, 0);
@@ -74,7 +86,10 @@ public final class HlsDownloader {
             InputStream in = r.body();
             byte[] buf = new byte[64 * 1024];
             int n;
-            while ((n = in.read(buf)) >= 0) bos.write(buf, 0, n);
+            while ((n = in.read(buf)) >= 0) {
+                if (cancel.cancelled()) throw new CancelledException();
+                bos.write(buf, 0, n);
+            }
             return bos.toByteArray();
         }
     }

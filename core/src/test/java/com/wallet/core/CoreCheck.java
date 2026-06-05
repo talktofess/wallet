@@ -21,6 +21,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 import com.wallet.core.crypto.SecretStream;
 import com.wallet.core.crypto.VaultCrypto;
+import com.wallet.core.download.Cancellation;
 import com.wallet.core.download.ContentDisposition;
 import com.wallet.core.download.Dash;
 import com.wallet.core.download.DashParser;
@@ -33,9 +34,11 @@ import com.wallet.core.download.HlsDownloader;
 import com.wallet.core.download.M3u8;
 import com.wallet.core.download.M3u8Parser;
 import com.wallet.core.download.MediaSniffer;
+import com.wallet.core.download.ProgressMeter;
 import com.wallet.core.media.MpegTs;
 import com.wallet.core.net.HttpClient;
 import com.wallet.core.net.RetryHttpClient;
+import com.wallet.core.util.ByteFormat;
 import com.wallet.core.util.UniqueNames;
 import com.wallet.core.vault.VaultIndex;
 
@@ -419,6 +422,94 @@ public final class CoreCheck {
             q.start(id);                              // change 2
             q.complete(id);                           // change 3
             check(hits[0] >= 3, "listener should fire on each change");
+        });
+
+        // -------- cancellation --------
+        test("FileDownloader honours cancellation", () -> {
+            FakeHttpClient http = new FakeHttpClient()
+                .stub("https://x/f.bin", 200, new byte[1000], "Content-Length", "1000");
+            Cancellation c = new Cancellation();
+            c.cancel();
+            boolean threw = false;
+            try {
+                FileDownloader.fetch(http, "https://x/f.bin", 0, null, new ByteArrayOutputStream(), null, c);
+            } catch (Exception e) { threw = true; }
+            check(threw, "a pre-cancelled fetch must throw");
+        });
+        test("HLS download cancels after the first segment", () -> {
+            FakeHttpClient http = new FakeHttpClient()
+                .stub("https://x/s0.ts", 200, "AAA".getBytes())
+                .stub("https://x/s1.ts", 200, "BBB".getBytes())
+                .stub("https://x/s2.ts", 200, "CCC".getBytes());
+            List<M3u8.Segment> segs = Arrays.asList(
+                new M3u8.Segment("https://x/s0.ts", 6, null, -1, -1),
+                new M3u8.Segment("https://x/s1.ts", 6, null, -1, -1),
+                new M3u8.Segment("https://x/s2.ts", 6, null, -1, -1));
+            M3u8 media = new M3u8(M3u8.Type.MEDIA, Collections.emptyList(), segs, 6, 0);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            Cancellation c = new Cancellation();
+            boolean threw = false;
+            try {
+                HlsDownloader.download(http, media, out, (done, total) -> { if (done == 1) c.cancel(); }, c);
+            } catch (Exception e) { threw = true; }
+            check(threw, "cancelled HLS must throw");
+            eq(new String(out.toByteArray()), "AAA");      // only the first segment landed
+        });
+
+        // -------- ProgressMeter / ByteFormat --------
+        test("progress meter computes speed and ETA", () -> {
+            ProgressMeter m = new ProgressMeter(10_000);
+            m.sample(0, 0);
+            m.sample(1000, 100);
+            m.sample(2000, 200);
+            eq((long) m.bytesPerSecond(), 100L);           // 200 bytes over 2s
+            eq(m.etaSeconds(1000), 8L);                    // (1000-200)/100
+        });
+        test("byte format is human readable", () -> {
+            eq(ByteFormat.bytes(512), "512 B");
+            eq(ByteFormat.bytes(1536), "1.5 KB");
+            eq(ByteFormat.bytes(5L * 1024 * 1024), "5.0 MB");
+            eq(ByteFormat.rate(1024 * 1024), "1.0 MB/s");
+        });
+
+        // -------- HLS EXT-X-MAP (fMP4 init segment) --------
+        test("HLS parses an EXT-X-MAP init segment", () -> {
+            String m = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6.0,\nseg0.m4s\n#EXTINF:6.0,\nseg1.m4s\n";
+            M3u8 pl = M3u8Parser.parse(m, "https://cdn.example.com/v/media.m3u8");
+            eq(pl.initSegment, "https://cdn.example.com/v/init.mp4");
+            eq(pl.segments.size(), 2);
+        });
+        test("HLS writes the init segment before the media", () -> {
+            FakeHttpClient http = new FakeHttpClient()
+                .stub("https://x/init.mp4", 200, "INIT".getBytes())
+                .stub("https://x/s0.m4s", 200, "AAA".getBytes())
+                .stub("https://x/s1.m4s", 200, "BBB".getBytes());
+            List<M3u8.Segment> segs = Arrays.asList(
+                new M3u8.Segment("https://x/s0.m4s", 6, null, -1, -1),
+                new M3u8.Segment("https://x/s1.m4s", 6, null, -1, -1));
+            M3u8 media = new M3u8(M3u8.Type.MEDIA, Collections.emptyList(), segs, 6, 0, "https://x/init.mp4");
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            HlsDownloader.download(http, media, out, null);
+            eq(new String(out.toByteArray()), "INITAAABBB");
+        });
+
+        // -------- queue note + restore --------
+        test("queue note sets a status line", () -> {
+            DownloadQueue q = new DownloadQueue();
+            String id = q.add("u", "n", "", 1).id;
+            q.start(id);
+            q.note(id, "1.5 MB/s");
+            eq(q.byId(id).message(), "1.5 MB/s");
+        });
+        test("queue restores from a serialized blob", () -> {
+            DownloadQueue q = new DownloadQueue();
+            q.add("https://x/a.mp4", "a.mp4", "video/mp4", 1);
+            byte[] blob = q.serialize();
+            DownloadQueue q2 = new DownloadQueue();
+            q2.add("other", "o", "", 9);          // will be replaced
+            q2.loadSerialized(blob);
+            eq(q2.tasks().size(), 1);
+            eq(q2.tasks().get(0).name, "a.mp4");
         });
 
         System.exit(summary());
