@@ -3,12 +3,20 @@
 [![CI](https://github.com/talktofess/wallet/actions/workflows/ci.yml/badge.svg)](https://github.com/talktofess/wallet/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-17-007396.svg)](https://openjdk.org/)
-![Tests](https://img.shields.io/badge/core%20tests-44%20passing-brightgreen.svg)
+![Tests](https://img.shields.io/badge/core%20tests-50%20passing-brightgreen.svg)
 
 A native Android app, in Java: an **on-device encrypted vault** with an **in-app
-browser that downloads media as you browse** and stores it sealed. It's the
+browser that downloads the video you're watching** and stores it sealed. It's the
 Java/Android sibling of the React Native [vault app](https://github.com/talktofess)
-— same AES-GCM design, rebuilt around a robust download pipeline.
+— same AES-GCM design and the same **chess-disguise unlock**, rebuilt around a
+robust download pipeline.
+
+**The whole app pretends to be a chess game.** Open it and it's just "Offline
+Chess" — no password box, nothing that says *vault*. The vault opens only when you
+play your **secret sequence of moves** from the opening position; those moves
+*are* the key (PBKDF2 over the move list). A wrong line just looks like a game.
+Once in, you browse to a private video, **watch it**, tap **Download**, and it's
+saved — encrypted — for later, playable inside the app.
 
 The interesting, breakable logic — crypto, HLS manifest parsing, the download
 engine — lives in a **pure-JDK `core` module with no Android dependency**, so it's
@@ -19,6 +27,8 @@ unit-tested on a plain JVM (and in CI) with no device or emulator. The Android
 core/   (pure JDK — unit-tested, no Android)
   crypto/VaultCrypto      AES-256-GCM sealing + PBKDF2 key derivation
   crypto/SecretStream     chunked, authenticated streaming encryption (large files)
+  chess/ChessEngine       dependency-free chess (legal moves) — the disguise board
+  chess/MoveKey           a played move sequence -> the unlock secret (domain-separated)
   net/HttpClient          the network seam (+ JdkHttpClient, + a fake for tests)
   net/RetryHttpClient     retry + exponential backoff over transient 5xx / IO errors
   download/MediaSniffer   classify a request as HLS / DASH / progressive / none
@@ -36,13 +46,16 @@ core/   (pure JDK — unit-tested, no Android)
   util/UniqueNames        collision-free filenames
   util/ByteFormat         human-readable sizes / rates
 app/    (Android — Java)
-  BrowserActivity   WebView + shouldInterceptRequest + DownloadListener -> MediaDetector
+  ChessActivity     the launcher disguise: play the secret moves to set up / unlock
+  VaultActivity     home (only once unlocked): browse, list saved videos, lock
+  BrowserActivity   WebView + shouldInterceptRequest + DownloadListener + a JS bridge
+                    that reports the <video> actually playing -> MediaDetector
+  PlayerActivity    plays a saved video in-app (decrypt to private cache, VideoView)
   DownloadJob       runs the core pipeline (HLS / DASH / progressive) off-thread
   DownloadService   foreground worker draining the queue + progress notification
   DownloadsActivity queue UI: per-item progress, pause/resume/cancel/retry
   TsRemuxer         lossless .ts -> .mp4 via MediaExtractor + MediaMuxer (no re-encode)
   VaultStore        SecretStream-encrypts files + keeps the encrypted VaultIndex
-  VaultActivity     unlock / list screen
 ```
 
 ## How browser downloading actually works (and why a naive pipeline breaks)
@@ -65,15 +78,21 @@ in the manifest) are decrypted in stride.
 a `206 Partial Content` means append, a `200` means the server ignored the range
 so we restart. The true size comes from `Content-Range: …/total`.
 
-**3. You have to *find* the media while browsing.** A `WebViewClient`'s
-`shouldInterceptRequest` sees every sub-request the page makes, and a
-`DownloadListener` catches `Content-Disposition: attachment` responses
-([technique](https://gist.github.com/kibotu/32313b957cd01258cf67)). Both feed
-`MediaSniffer`, which flags `.m3u8` / `video/*` / `.mp4` etc., so the app can offer
-a download even when the page never exposed one.
+**3. You have to *find* the media while browsing — including the URL with no file
+extension.** A `WebViewClient`'s `shouldInterceptRequest` sees every sub-request
+the page makes, and a `DownloadListener` catches `Content-Disposition: attachment`
+responses ([technique](https://gist.github.com/kibotu/32313b957cd01258cf67)). But a
+private video is often served from a tokenized, extensionless URL like
+`/stream/9f3?token=…` that a URL sniff can't recognise. So the browser also injects
+a tiny script that finds the `<video>` the page is **actually playing** and reports
+its real `currentSrc` back over a JS bridge — *that* is "the video I'm watching".
+All three feed `MediaSniffer`/`MediaDetector`, so the **Download** bar lights up
+even when the page never offered a download.
 
 ```
- browse ─▶ WebView.shouldInterceptRequest ─▶ MediaSniffer ─▶ "N downloads found"
+ browse + watch ─▶ shouldInterceptRequest  ┐
+                 ▶ injected <video> probe   ├▶ MediaDetector ─▶ "⬇ Download this video"
+                 ▶ DownloadListener         ┘
                                                    │
  tap ──────────────────────────────────────────────┘
    │
@@ -83,6 +102,8 @@ a download even when the page never exposed one.
         (all HTTP via RetryHttpClient: backoff over transient 5xx / IO errors)
                                                    │
                                    SecretStream.encrypt ─▶ private storage + encrypted VaultIndex
+                                                   │
+                          watch later ─▶ decrypt to private cache ─▶ in-app VideoView
 ```
 
 ## Security model
@@ -95,7 +116,12 @@ a download even when the page never exposed one.
 - The **catalogue itself is encrypted** (`VaultIndex`): the list of what you saved
   is private, not just the file bytes.
 - Key is **PBKDF2-HMAC-SHA256**, 210k iterations, over a persisted random salt.
-  The passphrase and derived key are never written to disk.
+  The unlock secret and derived key are never written to disk.
+- The unlock secret is your **sequence of chess moves**, not a passphrase: the moves
+  are joined, domain-separated (`MoveKey`), and fed to that same PBKDF2. Only the
+  salt and the move *count* are stored in the clear; the moves themselves never are.
+  A brand-new vault writes an encrypted verifier on first unlock, so a **wrong move
+  sequence is rejected** instead of silently opening an empty vault.
 
 ## Build & test
 
@@ -103,7 +129,7 @@ a download even when the page never exposed one.
 ```bash
 mkdir -p out && find core/src -name '*.java' > sources.txt
 javac -d out @sources.txt
-java -cp out com.wallet.core.CoreCheck     # 44/44 tests pass
+java -cp out com.wallet.core.CoreCheck     # 50/50 tests pass
 ```
 
 **The app:** open the `wallet` folder in Android Studio (Koala / 2024.1+), let it
@@ -126,15 +152,20 @@ copyright and each site's terms of service.
 
 ## Status
 
-- `core`: tested (**44/44**), verified locally and in CI — crypto, streaming
-  encryption, HLS (incl. fMP4 `EXT-X-MAP`) + DASH parsing, range/resume, retry,
-  **cancellable downloads**, **speed/ETA metering**, TS demux, vault index, and the
-  **download-queue state machine** (transitions + persistence).
-- `app`: WebView browser + interception; a **download queue** drained by a
-  foreground service with a **progress + speed/ETA notification**; a **downloads
-  screen** (pause / resume / cancel / retry) where cancelling a *running* task now
-  stops its IO promptly; HLS/DASH/progressive download; `.ts → .mp4` remux; the
-  encrypted vault; and **queue persistence** (sealed, restored on unlock). Built in
-  Android Studio.
+- `core`: tested (**50/50**), verified locally and in CI — crypto, streaming
+  encryption, the **chess engine + move→key derivation**, HLS (incl. fMP4
+  `EXT-X-MAP`) + DASH parsing, range/resume, retry, **cancellable downloads**,
+  **speed/ETA metering**, TS demux, vault index, and the **download-queue state
+  machine** (transitions + persistence).
+- `app`: the **chess-disguise unlock** (set up a secret opening, then play it to
+  open — wrong lines just look like a game); a home screen that lists your saved
+  videos and **plays them in-app**; a WebView browser that surfaces the video
+  you're watching three ways (request interception, an injected `<video>` probe,
+  and `DownloadListener`) behind one big **Download** bar; a **download queue**
+  drained by a foreground service with a **progress + speed/ETA notification**; a
+  **downloads screen** (pause / resume / cancel / retry) where cancelling a
+  *running* task stops its IO promptly; HLS/DASH/progressive download; `.ts → .mp4`
+  remux; the encrypted vault; and **queue persistence** (sealed, restored on
+  unlock). Built in Android Studio.
 - Follow-ups: DASH `SegmentList`/`SegmentBase` manifests, biometric unlock, and
   parallel/segment-level resume.

@@ -13,8 +13,10 @@
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.DarkActionBar">
 
+        <!-- The launcher is the chess disguise; it opens the vault on the secret
+             move sequence and only then hands off to VaultActivity. -->
         <activity
-            android:name=".VaultActivity"
+            android:name=".ChessActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -23,8 +25,17 @@
         </activity>
 
         <activity
+            android:name=".VaultActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".BrowserActivity"
             android:exported="false" />
+
+        <activity
+            android:name=".PlayerActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <activity
             android:name=".DownloadsActivity"

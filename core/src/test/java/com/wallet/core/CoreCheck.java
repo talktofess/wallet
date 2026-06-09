@@ -512,6 +512,60 @@ public final class CoreCheck {
             eq(q2.tasks().get(0).name, "a.mp4");
         });
 
+        // -------- chess (the unlock disguise) --------
+        test("chess opening position is set up correctly", () -> {
+            com.wallet.core.chess.ChessEngine.Piece[][] b = com.wallet.core.chess.ChessEngine.initialBoard();
+            eq(b[7][4].type, com.wallet.core.chess.ChessEngine.Type.K);      // white king on e1
+            eq(b[7][4].color, com.wallet.core.chess.ChessEngine.Color.W);
+            eq(b[0][3].type, com.wallet.core.chess.ChessEngine.Type.Q);      // black queen on d8
+            eq(b[0][3].color, com.wallet.core.chess.ChessEngine.Color.B);
+            check(b[4][4] == null, "e4 starts empty");
+        });
+        test("a pawn can advance one or two from its start", () -> {
+            com.wallet.core.chess.ChessEngine.Piece[][] b = com.wallet.core.chess.ChessEngine.initialBoard();
+            List<com.wallet.core.chess.ChessEngine.Pos> mv =
+                    com.wallet.core.chess.ChessEngine.legalMoves(b, new com.wallet.core.chess.ChessEngine.Pos(6, 4)); // e2
+            eq(mv.size(), 2);
+            check(mv.contains(new com.wallet.core.chess.ChessEngine.Pos(5, 4)), "e3 available");
+            check(mv.contains(new com.wallet.core.chess.ChessEngine.Pos(4, 4)), "e4 available");
+        });
+        test("squareName maps coordinates to algebraic", () -> {
+            eq(com.wallet.core.chess.ChessEngine.squareName(new com.wallet.core.chess.ChessEngine.Pos(6, 4)), "e2");
+            eq(com.wallet.core.chess.ChessEngine.squareName(new com.wallet.core.chess.ChessEngine.Pos(0, 0)), "a8");
+            eq(com.wallet.core.chess.ChessEngine.squareName(new com.wallet.core.chess.ChessEngine.Pos(7, 7)), "h1");
+        });
+        test("move applies, captures, and does not mutate the source board", () -> {
+            com.wallet.core.chess.ChessEngine.Piece[][] b = com.wallet.core.chess.ChessEngine.initialBoard();
+            com.wallet.core.chess.ChessEngine.Piece[][] after = com.wallet.core.chess.ChessEngine.move(
+                    b, new com.wallet.core.chess.ChessEngine.Pos(6, 4), new com.wallet.core.chess.ChessEngine.Pos(4, 4));
+            check(b[6][4] != null, "original board is unchanged");
+            check(after[6][4] == null, "e2 vacated on the new board");
+            eq(after[4][4].type, com.wallet.core.chess.ChessEngine.Type.P);  // pawn now on e4
+        });
+        test("a played sequence derives a stable, domain-separated secret", () -> {
+            String s = com.wallet.core.chess.MoveKey.movesToSecret(Arrays.asList("E2E4", "e7e5", "g1f3"));
+            eq(s, "chesskey-v1|e2e4 e7e5 g1f3");                              // lower-cased, space-joined
+            // Same moves -> same secret -> same key (so the vault opens deterministically).
+            byte[] salt = VaultCrypto.newSalt();
+            SecretKey k1 = VaultCrypto.deriveKey(s.toCharArray(), salt, 10_000);
+            SecretKey k2 = VaultCrypto.deriveKey(
+                    com.wallet.core.chess.MoveKey.movesToSecret(Arrays.asList("e2e4", "e7e5", "g1f3")).toCharArray(),
+                    salt, 10_000);
+            byte[] blob = VaultCrypto.seal(k1, "open sesame".getBytes(StandardCharsets.UTF_8));
+            eq(new String(VaultCrypto.open(k2, blob), StandardCharsets.UTF_8), "open sesame");
+        });
+        test("a different sequence derives a different key", () -> {
+            byte[] salt = VaultCrypto.newSalt();
+            SecretKey good = VaultCrypto.deriveKey(
+                    com.wallet.core.chess.MoveKey.movesToSecret(Arrays.asList("e2e4", "e7e5")).toCharArray(), salt, 10_000);
+            SecretKey bad = VaultCrypto.deriveKey(
+                    com.wallet.core.chess.MoveKey.movesToSecret(Arrays.asList("d2d4", "d7d5")).toCharArray(), salt, 10_000);
+            byte[] blob = VaultCrypto.seal(good, "x".getBytes());
+            boolean threw = false;
+            try { VaultCrypto.open(bad, blob); } catch (Exception e) { threw = true; }
+            check(threw, "wrong opening must not open the vault");
+        });
+
         System.exit(summary());
     }
 

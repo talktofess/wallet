@@ -38,8 +38,31 @@ public final class MediaDetector {
         return true;
     }
 
+    /**
+     * Offer the source of a {@code <video>} the page is actually playing (found
+     * by the in-page JS bridge). Unlike {@link #offer}, this trusts that it IS a
+     * video even when the URL has no media extension and no Content-Type — exactly
+     * the private/tokenized case (e.g. {@code /stream/123?token=…}) that a URL
+     * sniff alone would miss. Returns true if it was a new hit.
+     */
+    public synchronized boolean offerVideo(String url) {
+        if (url == null || !url.startsWith("http")) return false;   // skip blob:/data:/about:
+        if (hits.containsKey(url)) return false;
+        MediaSniffer.Kind kind = MediaSniffer.classify(url, null);
+        if (kind == MediaSniffer.Kind.NONE) kind = MediaSniffer.Kind.PROGRESSIVE;
+        hits.put(url, new Hit(url, kind, null));
+        return true;
+    }
+
     public synchronized List<Hit> all() {
         return new ArrayList<>(hits.values());
+    }
+
+    /** The most recently seen hit — the best guess at "the video I'm watching". */
+    public synchronized Hit latest() {
+        Hit last = null;
+        for (Hit h : hits.values()) last = h;
+        return last;
     }
 
     public synchronized int count() {

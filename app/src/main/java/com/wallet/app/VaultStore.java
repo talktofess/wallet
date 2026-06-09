@@ -38,6 +38,7 @@ public final class VaultStore {
     private final File dir;
     private final File saltFile;
     private final File indexFile;
+    private final File chessLenFile;
     private SecretKey key;
     private VaultIndex index = new VaultIndex();
 
@@ -47,22 +48,59 @@ public final class VaultStore {
         dir.mkdirs();
         saltFile = new File(dir, ".salt");
         indexFile = new File(dir, ".index");
+        chessLenFile = new File(dir, ".chesslen");
     }
 
     public boolean isInitialised() { return saltFile.exists(); }
     public boolean isUnlocked() { return key != null; }
     public void lock() { key = null; index = new VaultIndex(); }
 
-    public void unlock(char[] passphrase) throws Exception {
+    /**
+     * How many chess moves form this vault's unlock sequence, or 0 if it was
+     * never set. Stored in the clear (like the PBKDF2 salt): it leaks only the
+     * <em>length</em> of the opening, never the moves themselves, and the
+     * disguise needs it to know when to attempt an unlock after the Nth move.
+     */
+    public int chessLen() {
+        try {
+            if (!chessLenFile.exists()) return 0;
+            return Integer.parseInt(new String(Files.readAllBytes(chessLenFile.toPath()),
+                    StandardCharsets.UTF_8).trim());
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    public void setChessLen(int len) throws IOException {
+        writeAll(chessLenFile, String.valueOf(len).getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Derive the key from {@code secret} and open the vault. The call is atomic:
+     * a wrong secret throws and leaves the store <em>locked</em> (so the chess
+     * disguise can attempt an unlock after every move and stay silent on a miss).
+     *
+     * <p>For a brand-new vault the encrypted index is written immediately, sealing
+     * a verifier under this key — that is what lets a <em>wrong</em> secret be
+     * rejected on every later open instead of silently "unlocking" an empty vault.
+     */
+    public void unlock(char[] secret) throws Exception {
+        boolean newVault = !saltFile.exists();
         byte[] salt;
-        if (saltFile.exists()) {
-            salt = Files.readAllBytes(saltFile.toPath());
-        } else {
+        if (newVault) {
             salt = VaultCrypto.newSalt();
             writeAll(saltFile, salt);
+        } else {
+            salt = Files.readAllBytes(saltFile.toPath());
         }
-        key = VaultCrypto.deriveKey(passphrase, salt, VaultCrypto.DEFAULT_ITERATIONS);
-        loadIndex();
+        SecretKey candidate = VaultCrypto.deriveKey(secret, salt, VaultCrypto.DEFAULT_ITERATIONS);
+        VaultIndex loaded = indexFile.exists()
+                ? VaultIndex.parse(VaultCrypto.open(candidate, Files.readAllBytes(indexFile.toPath())))
+                : new VaultIndex();
+        // Past this point the secret is correct (or the vault is brand-new).
+        key = candidate;
+        index = loaded;
+        if (newVault) saveIndex();
     }
 
     /** Stream-encrypt {@code in} into the vault, recording metadata. Returns the (unique) saved name. */
@@ -129,14 +167,6 @@ public final class VaultStore {
     private File blobFile(String name) {
         String enc = Base64.getUrlEncoder().withoutPadding().encodeToString(name.getBytes(StandardCharsets.UTF_8));
         return new File(dir, enc + ".v");
-    }
-
-    private void loadIndex() throws Exception {
-        if (indexFile.exists()) {
-            index = VaultIndex.parse(VaultCrypto.open(key, Files.readAllBytes(indexFile.toPath())));
-        } else {
-            index = new VaultIndex();
-        }
     }
 
     private void saveIndex() throws IOException {

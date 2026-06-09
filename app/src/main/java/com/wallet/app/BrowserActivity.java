@@ -5,12 +5,15 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
+import android.webkit.JavascriptInterface;
 import android.webkit.URLUtil;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -27,16 +30,25 @@ import java.util.List;
 import com.wallet.core.download.ContentDisposition;
 
 /**
- * The in-app browser. As a page loads, {@link WebViewClient#shouldInterceptRequest}
- * sees every network request and {@link android.webkit.DownloadListener} catches
- * direct downloads; both feed a {@link MediaDetector}, so streamed video the page
- * never offers as a "download" still surfaces. Tapping a hit runs a
- * {@link DownloadJob} and stores the result encrypted in the vault.
+ * The in-app browser — where you find the video. You watch a page normally; the
+ * moment a video plays, the big <b>Download</b> bar at the bottom lights up and a
+ * tap saves it (encrypted) to your vault. It surfaces media three ways, so even a
+ * "you can't download this" site is covered:
+ *
+ * <ul>
+ *   <li>{@link WebViewClient#shouldInterceptRequest} sees every network request,
+ *       catching {@code .m3u8 / .mpd / .mp4} streams as they load;</li>
+ *   <li>an injected JS bridge reports the source of the {@code <video>} that is
+ *       actually playing — this catches tokenized/extensionless URLs the request
+ *       sniff can't recognise ("the video I'm watching");</li>
+ *   <li>{@link android.webkit.DownloadListener} catches plain file downloads.</li>
+ * </ul>
  */
 public final class BrowserActivity extends Activity {
 
     private WebView web;
-    private Button downloadsButton;
+    private EditText address;
+    private Button downloadBar;
     private final MediaDetector detector = new MediaDetector();
     private VaultStore vault;
 
@@ -44,33 +56,30 @@ public final class BrowserActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         vault = ((App) getApplication()).vault();
+        if (!vault.isUnlocked()) { finish(); return; }     // never browse from a locked vault
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
 
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-
-        final EditText address = new EditText(this);
+        address = new EditText(this);
         address.setHint(R.string.address_hint);
         address.setSingleLine(true);
-        address.setLayoutParams(new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        downloadsButton = new Button(this);
-        downloadsButton.setText("0");
-        downloadsButton.setEnabled(false);
-        downloadsButton.setOnClickListener(v -> showDownloads());
-
-        bar.addView(address);
-        bar.addView(downloadsButton);
+        address.setImeOptions(EditorInfo.IME_ACTION_GO);
 
         web = new WebView(this);
         web.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        root.addView(bar);
+        downloadBar = new Button(this);
+        downloadBar.setAllCaps(false);
+        downloadBar.setBackgroundColor(Color.parseColor("#2E7D32"));
+        downloadBar.setTextColor(Color.WHITE);
+        downloadBar.setVisibility(View.GONE);
+        downloadBar.setOnClickListener(v -> downloadDetected());
+
+        root.addView(address);
         root.addView(web);
+        root.addView(downloadBar);
         setContentView(root);
 
         WebSettings ws = web.getSettings();
@@ -78,12 +87,14 @@ public final class BrowserActivity extends Activity {
         ws.setDomStorageEnabled(true);
         ws.setMediaPlaybackRequiresUserGesture(false);
 
+        web.addJavascriptInterface(new MediaBridge(), "AndroidMedia");
+
         web.setWebViewClient(new WebViewClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 String url = request.getUrl().toString();
                 if (detector.offer(url, null)) {        // content-type unknown here; sniff by URL
-                    runOnUiThread(BrowserActivity.this::updateBadge);
+                    runOnUiThread(BrowserActivity.this::refreshBar);
                 }
                 return null;                            // observe only, don't replace the response
             }
@@ -91,13 +102,14 @@ public final class BrowserActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 address.setText(url);
+                view.evaluateJavascript(VIDEO_PROBE, null);
             }
         });
 
         // Direct downloads (Content-Disposition: attachment) give us the MIME type.
         web.setDownloadListener((url, ua, contentDisposition, mime, length) -> {
             detector.offer(url, mime);
-            updateBadge();
+            refreshBar();
             promptDownload(url, mime, URLUtil.guessFileName(url, contentDisposition, mime));
         });
 
@@ -112,6 +124,36 @@ public final class BrowserActivity extends Activity {
         maybeRequestNotifications();
     }
 
+    /**
+     * Injected into every page once loaded: find the {@code <video>} elements (and
+     * their {@code <source>} children) and report their real URLs back through the
+     * {@code AndroidMedia} bridge — now and whenever one starts playing, since many
+     * sites create the player after the page settles.
+     */
+    private static final String VIDEO_PROBE =
+            "(function(){"
+          + "  if(window.__wlt)return; window.__wlt=true;"
+          + "  function rep(){try{"
+          + "    document.querySelectorAll('video').forEach(function(v){"
+          + "      if(v.currentSrc)AndroidMedia.found(v.currentSrc);"
+          + "      if(v.src)AndroidMedia.found(v.src);"
+          + "      v.querySelectorAll('source').forEach(function(s){if(s.src)AndroidMedia.found(s.src);});"
+          + "    });"
+          + "  }catch(e){}}"
+          + "  rep();"
+          + "  document.addEventListener('play',rep,true);"
+          + "  document.addEventListener('loadeddata',rep,true);"
+          + "  setInterval(rep,1500);"
+          + "})();";
+
+    /** Bridge target for {@link #VIDEO_PROBE}. {@code found} is called on a binder thread. */
+    private final class MediaBridge {
+        @JavascriptInterface
+        public void found(String url) {
+            if (detector.offerVideo(url)) runOnUiThread(BrowserActivity.this::refreshBar);
+        }
+    }
+
     /** Android 13+ gates the download progress notification behind a runtime grant. */
     private void maybeRequestNotifications() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
@@ -122,7 +164,7 @@ public final class BrowserActivity extends Activity {
 
     private void go(String url) {
         detector.clear();
-        updateBadge();
+        refreshBar();
         web.loadUrl(url);
     }
 
@@ -130,14 +172,31 @@ public final class BrowserActivity extends Activity {
         return url.startsWith("http") ? url : "https://" + url;
     }
 
-    private void updateBadge() {
+    /** Show/label the download bar to match what's been detected on this page. */
+    private void refreshBar() {
         int n = detector.count();
-        downloadsButton.setText(String.valueOf(n));
-        downloadsButton.setEnabled(n > 0);
+        if (n == 0) {
+            downloadBar.setVisibility(View.GONE);
+        } else {
+            downloadBar.setVisibility(View.VISIBLE);
+            downloadBar.setText(n == 1
+                    ? getString(R.string.download_this_video)
+                    : getString(R.string.download_pick, n));
+        }
     }
 
-    private void showDownloads() {
-        final List<MediaDetector.Hit> hits = detector.all();
+    /** The download bar was tapped: save the one video, or let the user pick. */
+    private void downloadDetected() {
+        List<MediaDetector.Hit> hits = detector.all();
+        if (hits.isEmpty()) {
+            toast(getString(R.string.no_video_yet));
+            return;
+        }
+        if (hits.size() == 1) {
+            MediaDetector.Hit h = hits.get(0);
+            promptDownload(h.url, h.contentType, null);
+            return;
+        }
         String[] labels = new String[hits.size()];
         for (int i = 0; i < hits.size(); i++) {
             labels[i] = hits.get(i).kind + "   " + hits.get(i).url;
@@ -172,7 +231,7 @@ public final class BrowserActivity extends Activity {
         Intent i = new Intent(this, DownloadService.class);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i);
         else startService(i);
-        toast("Queued: " + display);
+        toast("Saving to vault: " + display);
     }
 
     @Override
@@ -190,6 +249,7 @@ public final class BrowserActivity extends Activity {
         }
         if (item.getItemId() == 2) {
             ((App) getApplication()).vault().lock();
+            startActivity(new Intent(this, ChessActivity.class));
             finish();
             return true;
         }

@@ -1,13 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Wallet</string>
-    <string name="passphrase">Passphrase</string>
-    <string name="unlock">Unlock</string>
-    <string name="create_vault">Create vault</string>
-    <string name="open_browser">Open browser</string>
-    <string name="saved_items">Saved items</string>
+    <!-- The launcher label is the disguise: it just looks like a chess app. -->
+    <string name="app_name">Offline Chess</string>
+    <string name="open_browser">Find a video to save</string>
+    <string name="downloads">Downloads</string>
+    <string name="lock_vault">Lock</string>
+    <string name="saved_items">Your saved videos</string>
+    <string name="nothing_saved">Nothing saved yet. Open the browser, play a video, and tap Download.</string>
+    <string name="preparing">Opening %s…</string>
     <string name="address_hint">https://…</string>
-    <string name="media_found">Media found on this page</string>
-    <string name="download_to_vault">Download to vault?</string>
+    <string name="media_found">Which one?</string>
+    <string name="download_to_vault">Save this to your vault?</string>
     <string name="download">Download</string>
+    <string name="download_this_video">⬇  Download this video</string>
+    <string name="download_pick">⬇  Download video  (%d found)</string>
+    <string name="no_video_yet">Start playing the video first, then tap here.</string>
 </resources>
